@@ -1,12 +1,14 @@
 package com.orange;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -15,172 +17,199 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import javax.swing.SingleSelectionModel;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 public class Micros {
-	static final String APP_COMPONENTS_JSON="appComponents.json";
-	static final String APP_COMPONENTS_TS="src/app/components/app-components.ts";
-	static final String PACKAGE_CONFIG_JSON="package.config.json"; //PARA ANGULAR5
+	static final String POM_XML="pom.xml";
 
 	static final String MASTER_BRANCH="master";
+	static final String RELEASE_BRANCH="release";
 	static final String DEVELOP_BRANCH="develop";
 
 	static final String SONAR_KEY = "key";
 	static final String SONAR_ID = "id";
 	static final String SONAR_STATUS = "status";
-		
+
 	static HashMap<String, String> projects= new HashMap<>();
-	
+
 	static Set<String> excluded = new HashSet<>();
 
+	static boolean debug=false;
+	static boolean error=false;
+
 	public static void main(String[] args) {
-		
-		String text="SPA;COMPONENTE;VERSION;RAMA;REPO";
-	
-		excluded.add("FRONTALUNIFICADO_ANGJS_SPABASE"); //POC de arquitectura
-		excluded.add("ALTAMIRAOSP_APPMOV_SPA"); //Repositorio vacio
-		excluded.add("PDV_ANG_SPA_PARRAS"); //algo del Parras :-(
-		excluded.add("WEBDOCUMENTACION_ANG_SPACKYCO"); //Estas 3 de KYC no son buenas
-		excluded.add("WEBDOCUMENTACION_ANG_SPACKYCA"); //  las correctas tienen a marca con todas las letras
-		excluded.add("WEBDOCUMENTACION_ANG_SPACKYCJ"); 	
-		
+
+		for (int i=0;i<args.length;i++) {
+			switch (args[i].toUpperCase()) {
+			case "DEBUG":{ 
+				debug=true; 
+				break;
+			}
+			case "ERROR":{ 
+				error=true; 
+				break;
+			}
+			default: {
+				System.out.println("argunmento invalido: "+args[i]);
+				break;
+			}
+			}
+		}
+
+		String text="\nMICRO;ARTEFACTO;VERSION;RAMA;PARENT";
+
+		excluded.add("XXXXXXXXX"); 	
+
+
 		try {
-			Map<String, String> projectsMap=getGitLab("projects?search=_SPA", true);
-			String projectsStr=(String)projectsMap.get("gitlab");
+			Map<String, String> projectsMap=getGitLab("projects?search=MIC", true);
+//			Map<String, String> projectsMap=getGitLab("projects?search=FUN_MIC_CUSTOMERVIEW", true);
+			String projectsStr=projectsMap.get("gitlab");
 			while (projectsMap.get("next")!=null) {
-				projectsMap = getGitLab((String)projectsMap.get("next"), true);
-				projectsStr+=(String)projectsMap.get("gitlab");
+				if (debug) System.out.println("next >> "+projectsMap.get("next"));
+				projectsMap = getGitLab(projectsMap.get("next"), true);
+				projectsStr+=projectsMap.get("gitlab");
 				//arreglamos el JSON generado
-				//System.out.println(projectsStr.indexOf("]["));
 				projectsStr=projectsStr.substring(0, projectsStr.indexOf("]["))+","+projectsStr.substring(projectsStr.indexOf("][")+2);
 			}
-			//System.out.println(projectsStr);
+			if (debug) System.out.println(projectsStr);
+
 			//hay que completar el Json para que el parser lo entienda...
 			JSONObject json = new JSONObject("{'projects':"+projectsStr+"}");
 			JSONArray projectsArray = json.getJSONArray("projects");
+			if (debug) System.out.println("#repos="+projectsArray.length());
 			for (int i=0; i<projectsArray.length();i++) {
 				JSONObject project= (JSONObject)projectsArray.get(i);
 				String name=project.getString("name");
 				if (!excluded.contains(name)) {
-					//System.out.println(name);
+					if (debug) System.out.println(name);
 					int id=project.getInt("id");
 					projects.put(String.valueOf(id),name);
-					text+=getComponents (name, id);		
+					text+=getMicros (name, id);	
+					System.out.print("\r"+i+" ");
 				} else {
-					System.err.println("["+name+"] se excluye del analisis...");
+					if (error) System.err.println("["+name+"] se excluye del analisis...");
 				}
 			}
 
 		} catch (IOException e1) {
-			// TODO Auto-generated catch block
 			e1.printStackTrace();
 		}
-		
+
 		System.out.println(text);
-		
+
 	}
 
 
-	static String getComponents (String project, int id) {
-		String csv="";
-		csv+=parseCommonComponents(project, id, APP_COMPONENTS_JSON);
-		csv+=parseInnerComponents(project, id, APP_COMPONENTS_TS);
-		csv+=parseCommonComponents(project, id, PACKAGE_CONFIG_JSON);
+	static String getMicros (String project, int id) {
+		String csv="\n";
+		Map<String, String> m=parseMicro(project, id, POM_XML);
+		csv+=project;
+		csv+=";"+m.get("name");
+		csv+=";"+m.get("version");
+		csv+=";"+m.get("branch");
+		csv+=";"+m.get("parent");
 		return csv;
 	}
 
-	static String parseCommonComponents(String project, int id, String file) {
-		
-		String csv="";
+	static Map<String, String>  parseMicro(String project, int id, String file) {
+
 		String content="";
-		String branch=MASTER_BRANCH;
+		HashMap<String, String> map= new HashMap<>();
 		
 		try {		
 			try {
-
-				content = getGitLabFile(id, file, branch,false);
-			} catch (FileNotFoundException e) {
-				System.err.println(e.getMessage());
+				//intentamos coger la version de produccion la primera
+				content = getGitLabFile(id, file, MASTER_BRANCH, false);
+				map.put("branch", MASTER_BRANCH);
+			} catch (FileNotFoundException master) {
+				if (debug) System.out.println(master.getMessage());
 				try {
-					branch=DEVELOP_BRANCH;
-					content = getGitLabFile(id, file, branch,false);
-				} catch (FileNotFoundException ee) {
-					System.err.println(ee.getMessage());
-					return "";
+					//si no, cogemos la de UAT
+					content = getGitLabFile(id, file, RELEASE_BRANCH, false);
+					map.put("branch", RELEASE_BRANCH);
+				} catch (FileNotFoundException release) {
+					if (debug) System.out.println(release.getMessage());
+					try {
+						//por ultimo cogemos la de desarrollo
+						content = getGitLabFile(id, file, DEVELOP_BRANCH, false);
+						map.put("branch", DEVELOP_BRANCH);
+					} catch (FileNotFoundException develop) {
+						if (debug) System.out.println(develop.getMessage());
+						map.put("name", file+" no encontrado");
+						return map;
+					}
+				}
+			}
+
+			//System.out.println(project+">>" + content);
+			
+			DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+			DocumentBuilder builder = factory.newDocumentBuilder();
+
+			ByteArrayInputStream input = new ByteArrayInputStream(content.getBytes("UTF-8"));
+			Document doc = builder.parse(input);
+
+			Element root = doc.getDocumentElement();
+			NodeList childs = root.getChildNodes();
+			String name="sin nombre";
+			String version="-1";
+			String parent_version="-1";
+			for (int i=0;i<childs.getLength();i++) {
+				switch (childs.item(i).getNodeName()) {
+				case "artifactId": {
+					name=childs.item(i).getTextContent();
+					break;
+				}
+				case "version":{
+					version=childs.item(i).getTextContent();
+					break;
+				}
+				case "parent":{
+					parent_version=((Element)childs.item(i)).getElementsByTagName("version").item(0).getTextContent();
+				}
+				default: {
+					
+				}
+					
 				}
 			}
 			
-			JSONObject json = new JSONObject(content);
-			JSONObject components;
-			if (file==APP_COMPONENTS_JSON) {
-				components= json.getJSONObject("appComponents");
-			} else {
-				components= json.getJSONObject("dependencies");
-			}
-			Iterator<String> it= components.keys();
-			while (it.hasNext()) {
-				String name = it.next();
-				//System.out.println(name);
-				String version = components.getString(name);
-				version= version.replace("^", "");
-				String ver[] = version.split("\\.|\\-|_");
-				int vversion=Integer.parseInt(ver[0])*10000+Integer.parseInt(ver[1])*100+Integer.parseInt(ver[2]);
-				csv+="\n"+project+";"+name+";"+vversion+";"+branch+";SI";
-			}
-
-			//System.out.println(csv);
+			String vversion=formatVersion(version);
+			String pversion=formatVersion(parent_version);
+					
+			map.put("name", name);
+			map.put("version", vversion);
+			map.put("parent", pversion);
+			
 		} catch (IOException eee) {
 			System.err.println(eee.getMessage());
+		} catch (ParserConfigurationException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (SAXException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
 		}
-		return csv;	
+		return map;	
 
 	}
-	
-	static String parseInnerComponents(String project, int id, String file) {
-		
-		String csv="";
-		String content="";
-		String branch=MASTER_BRANCH;
-		
-		try {		
-			try {
 
-				content = getGitLabFile(id, file, branch,false);
-			} catch (FileNotFoundException e) {
-				System.err.println(e.getMessage());
-				try {
-					branch=DEVELOP_BRANCH;
-					content = getGitLabFile(id, file, branch, false);
-				} catch (FileNotFoundException ee) {
-					System.err.println(ee.getMessage());
-					content="";
-				}
-			}
-
-			//parserar el typescript
-			int a=content.indexOf("app-components");
-			if (a>0) {
-				int b = content.indexOf("'", a+15); //comilla antes del componente
-				while (b>0) {
-					int c = content.indexOf("'", b+1); //comilla despues del componente
-					String name = content.substring(b+1, c);
-					//System.out.println(name);
-					csv+="\n"+project+";"+name+";-1;"+branch+";NO";
-					b=content.indexOf("'", c+1);
-				} 
-			}
-
-		} catch (IOException eee) {
-			System.err.println(eee.getMessage());
-		}
-		return csv;	
-
-	}
 
 	static String getGitLabFile (int id, String file, String branch, boolean v4) throws IOException {
 		String urlFile=URLEncoder.encode(file, "UTF-8");
-		
+
 		urlFile=urlFile.replaceAll("\\.", "%2E").replaceAll("-", "%2D").replace("_","%5F");
 		String url="";
 		if (v4) {
@@ -198,7 +227,7 @@ public class Micros {
 		con.setRequestProperty("PRIVATE-TOKEN", "nMW2c2Tjsxp5m-zqnZaG");
 
 		int responseCode = con.getResponseCode();
-		//System.out.println("\nSending 'GET' request to URL : " + url);
+		if (debug) System.out.println("\nSending 'GET' request to URL : " + url);
 		if (responseCode != 200) {
 			throw new FileNotFoundException("Archivo ["+file+"] no encontrado en la rama ["+branch+"] del proyecto ["+projects.get(String.valueOf(id))+"]: http ["+url+"] error code: "+responseCode);
 		} else {
@@ -211,16 +240,21 @@ public class Micros {
 			}
 			in.close();
 			//print result
-			//System.out.println(response.toString());
+			if (debug) System.out.println(response.toString());
 			if (v4) {
 				return response.toString();
 			} else {//v3
-				JSONObject json = new JSONObject(response.toString());
-				String content=json.getString("content");
-				byte bytes[]=content.getBytes();
-				byte[] valueDecoded = Base64.getDecoder().decode(bytes);
-				//System.out.println("Decoded value is " + new String(valueDecoded));	
-				return new String(valueDecoded);
+				try {
+					JSONObject json = new JSONObject(response.toString());
+					String content=json.getString("content");
+					byte bytes[]=content.getBytes();
+					byte[] valueDecoded = Base64.getDecoder().decode(bytes);
+					if (debug) System.out.println("Decoded value is " + new String(valueDecoded));	
+					return new String(valueDecoded);
+				} catch (JSONException je) {
+					if (error) System.err.println(je.getMessage());
+					return ""; 
+				}
 			}
 		}
 	}
@@ -258,27 +292,50 @@ public class Micros {
 			in.close();
 			gitlab+=response.toString();
 			//print gitlab
-			//System.out.println(gitlab);
+			if (debug) System.out.println("JSON => "+gitlab);
 			answer.put("gitlab", gitlab);
-			
+
 			//miramos si está paginado y hay más paginas
 			Map<String, List<String>> headers = con.getHeaderFields();
-			//System.out.println("\nSending 'GET' request to URL : " + url + "headers: "+headers);
+			if (debug) System.out.println("\nSending 'GET' request to URL : " + url + "headers: "+headers);
 			List<String> links = headers.get("Link");
+			if (debug) System.out.println(links);
 			String[] nexts=links.get(0).split(",|;");
-			if (nexts[1].indexOf("next")>0) {
-				next=nexts[0].substring(1, nexts[0].length()-1);		
-				next= next.substring(next.indexOf("projects?"));
-				//System.err.println("Next="+next);
-				answer.put("next", next);
-			} else {
-				//System.err.println("No hay Next");
+			for (int i=0;i<nexts.length;i++) {
+				if (nexts[i].indexOf("next")>0) {
+					next=nexts[i-1].substring(1, nexts[i-1].length()-1);		
+					next= next.substring(next.indexOf("projects?"));
+					if (debug) System.out.println("Next="+next);
+					answer.put("next", next);
+					break;
+				} else {
+					if (debug) System.out.println("No hay Next");
+				}
 			}
-			//System.out.println(answer.toString();
+			if (debug) System.out.println("Headers => "+answer.toString());
 			return answer;
-			
+
 		}
 	}
+	static String formatVersion (String version) {
+		if (version=="") {
+			return "-1";
+		}
+		version= version.replace("^", "");
+		String ver[] = version.split("\\.|\\-|_");
+		//System.out.println(Arrays.asList(ver));
+		int v=0;
+		for (int i=0;i<ver.length;i++) {
+			try {
+				v*=100;
+				v+=Integer.parseInt(ver[i]);
+			} catch (NumberFormatException e) {
+				break;
+			}
+		}
+		
+		return String.valueOf(v);
 
-
+	}
+	
 }
