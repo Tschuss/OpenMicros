@@ -29,8 +29,7 @@ public class Micros {
 	static final String SONAR_KEY = "key";
 	static final String SONAR_ID = "id";
 	static final String SONAR_STATUS = "status";
-	
-	
+		
 	static HashMap<String, String> projects= new HashMap<>();
 	
 	static Set<String> excluded = new HashSet<>();
